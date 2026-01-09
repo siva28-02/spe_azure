@@ -1,0 +1,17 @@
+{
+  "name": "spe-backend-function",
+  "version": "1.0.0",
+  "description": "Azure Function for SPE Server-Side Filtering",
+  "scripts": {
+    "start": "func start",
+    "test": "echo \"No tests yet...\""
+  },
+  "dependencies": {
+    "@azure/identity": "^4.0.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "jsonwebtoken": "^9.0.2",
+    "isomorphic-fetch": "^3.0.0"
+  },
+  "devDependencies": {},
+  "main": "index.js"
+}
