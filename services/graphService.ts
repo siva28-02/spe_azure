@@ -122,16 +122,18 @@ export class GraphService {
 
   // --- Backend App Access Helpers ---
 
-  async getServicePrincipalId(): Promise<string> {
+  async getServicePrincipal(): Promise<{id: string, displayName: string}> {
     // We need to find the Service Principal (Enterprise App) Object ID corresponding to our Client ID
     // This requires Application.Read.All
     const clientId = AZURE_CONFIG.clientId;
-    // UPDATED: Using $filter is more robust than key-based lookup
-    const endpoint = `${GRAPH_BASE_URL}/servicePrincipals?$filter=appId eq '${clientId}'&$select=id`;
+    const endpoint = `${GRAPH_BASE_URL}/servicePrincipals?$filter=appId eq '${clientId}'&$select=id,displayName`;
     try {
         const result = await this.callApi(endpoint);
         if (result.value && result.value.length > 0) {
-            return result.value[0].id;
+            return {
+                id: result.value[0].id,
+                displayName: result.value[0].displayName
+            };
         }
         throw new Error("Service Principal not found. Ensure the App is registered in Enterprise Applications.");
     } catch (e: any) {
@@ -141,21 +143,27 @@ export class GraphService {
 
   async grantAppAccess(containerId: string): Promise<void> {
       try {
-          const spId = await this.getServicePrincipalId();
+          const sp = await this.getServicePrincipal();
           const endpoint = `${GRAPH_BETA_URL}/storage/fileStorage/containers/${containerId}/permissions`;
+          
+          // CRITICAL: Including displayName often fixes the 'userPrincipalName required' error 
+          // because it helps the API disambiguate the identity type.
           const body = {
               roles: ["manager"],
               grantedToV2: {
                   application: {
-                      id: spId
+                      id: sp.id,
+                      displayName: sp.displayName
                   }
               }
           };
+          
+          console.log("Granting App Access Payload:", JSON.stringify(body));
           await this.callApi(endpoint, { method: "POST", body: JSON.stringify(body) });
           console.log("App Access Granted successfully.");
       } catch (e: any) {
           if (e.message.includes("Conflict")) {
-              console.log("App already has access.");
+              console.log("App already has access (Conflict).");
           } else {
               console.error("Failed to grant App access", e);
               throw e;
@@ -324,7 +332,7 @@ export class GraphService {
             await this.grantAppAccess(containerId);
             log("Backend App granted Manager access.");
         } catch (appErr: any) {
-            log(`Warning: Could not grant App access. Backend filtering might fail. ${appErr.message}`);
+            log(`Warning: Could not grant App access. Backend filtering will fail. ${appErr.message}`);
         }
 
         log("Fetching Security Groups...");

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { SPEContainer, SPEPermission } from '../types';
 import { GraphService } from '../services/graphService';
 import { Button } from './Button';
-import { Users, UserPlus, ShieldCheck, Loader2, CheckCircle2, AlertCircle, RefreshCw, Trash2, Edit2, Save, X, User as UserIcon } from 'lucide-react';
+import { Users, UserPlus, ShieldCheck, Loader2, CheckCircle2, AlertCircle, RefreshCw, Trash2, Edit2, Save, X, User as UserIcon, Server } from 'lucide-react';
 import { ConfirmationModal } from './Modal';
 
 interface PermissionManagerProps {
@@ -97,6 +97,23 @@ export const PermissionManager: React.FC<PermissionManagerProps> = ({ containers
     } finally {
         setIsProvisioning(false);
     }
+  };
+  
+  // NEW: Manual Repair for App Access
+  const handleRepairAppAccess = async () => {
+      if(!selectedContainerId) return;
+      setIsProvisioning(true);
+      setLogs(prev => [...prev, "Attempting to grant Backend App access..."]);
+      try {
+          await graphService.grantAppAccess(selectedContainerId);
+          setLogs(prev => [...prev, "SUCCESS: Backend App is now a Manager."]);
+          fetchPermissions(selectedContainerId);
+          alert("Backend Access Repaired Successfully!");
+      } catch(e: any) {
+          setLogs(prev => [...prev, `ERROR: ${e.message}`]);
+      } finally {
+          setIsProvisioning(false);
+      }
   };
 
   const handleUpdateRole = async (permId: string) => {
@@ -384,7 +401,18 @@ export const PermissionManager: React.FC<PermissionManagerProps> = ({ containers
                             {isProvisioning && <div className="animate-pulse">_</div>}
                         </div>
 
-                        <div className="mt-auto">
+                        <div className="mt-auto space-y-2">
+                             <Button 
+                                variant="secondary" 
+                                className="w-full border-gray-300 text-gray-700 hover:bg-gray-50"
+                                onClick={handleRepairAppAccess}
+                                disabled={isProvisioning}
+                                size="sm"
+                            >
+                                 {isProvisioning ? <Loader2 className="w-3 h-3 animate-spin mr-2"/> : <Server className="w-3 h-3 mr-2"/>}
+                                 Repair Backend Access
+                            </Button>
+                            
                             <Button 
                                 variant="secondary" 
                                 className="w-full border-brand-200 text-brand-700 hover:bg-brand-50"
