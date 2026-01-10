@@ -123,8 +123,7 @@ export class GraphService {
   // --- Backend App Access Helpers ---
 
   async getServicePrincipal(): Promise<{id: string, displayName: string}> {
-    // We need to find the Service Principal (Enterprise App) Object ID corresponding to our Client ID
-    // This requires Application.Read.All
+    // We need to find the Service Principal (Enterprise App) Object ID AND DisplayName
     const clientId = AZURE_CONFIG.clientId;
     const endpoint = `${GRAPH_BASE_URL}/servicePrincipals?$filter=appId eq '${clientId}'&$select=id,displayName`;
     try {
@@ -146,8 +145,8 @@ export class GraphService {
           const sp = await this.getServicePrincipal();
           const endpoint = `${GRAPH_BETA_URL}/storage/fileStorage/containers/${containerId}/permissions`;
           
-          // CRITICAL: Including displayName often fixes the 'userPrincipalName required' error 
-          // because it helps the API disambiguate the identity type.
+          // CRITICAL FIX: Including 'displayName' helps Graph API identify this as an Application,
+          // preventing the "'userPrincipalName' is required" error.
           const body = {
               roles: ["manager"],
               grantedToV2: {
