@@ -3,7 +3,7 @@
   "Values": {
     "AzureWebJobsStorage": "",
     "FUNCTIONS_WORKER_RUNTIME": "node",
-    "TENANT_ID": "your-tenant-id-here",
+    "TENANT_ID": "1e18978e-9472-41a9-8192-832569049427",
     "CLIENT_ID": "c582b3a3-178c-4c61-a74a-7dc573048d8e",
     "CLIENT_SECRET": "123"
   },

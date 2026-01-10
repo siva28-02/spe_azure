@@ -13,27 +13,22 @@ module.exports = async function (context, req) {
     const containerTypeId = req.query.containerTypeId;
     const authHeader = req.headers.authorization;
 
-    // 1. Validate Request
     if (!containerTypeId || !authHeader) {
         context.res = { status: 400, body: "Missing containerTypeId or Authorization header" };
         return;
     }
 
     try {
-        // 2. Decode User Token
+        // 1. Decode User Token to know WHO is asking
         const token = authHeader.split(" ")[1];
         const decoded = jwt.decode(token); 
-        const userEmail = decoded.upn || decoded.unique_name || decoded.email;
-        let userId = decoded.oid; // Object ID is preferred for Group lookups
+        const userEmail = (decoded.upn || decoded.unique_name || decoded.email || "").toLowerCase();
+        let userId = decoded.oid; 
 
-        if (!userEmail) {
-            context.res = { status: 401, body: "Could not identify user email from token." };
-            return;
-        }
+        context.log(`[Option B] ----------------------------------------------------------------`);
+        context.log(`[Option B] INCOMING REQUEST: ${userEmail} (OID: ${userId})`);
 
-        context.log(`[Option B] Processing request for: ${userEmail} (OID: ${userId})`);
-
-        // 3. Authenticate as APP
+        // 2. Authenticate as the BACKEND APP (Service Principal)
         const credential = new ClientSecretCredential(
             process.env.TENANT_ID,
             process.env.CLIENT_ID,
@@ -46,39 +41,32 @@ module.exports = async function (context, req) {
 
         const graphClient = Client.initWithMiddleware({ authProvider });
 
-        // 4. Fetch User's Group Memberships (CRITICAL FOR RBAC)
-        // If we don't have an OID, fetch ID by email first
-        if (!userId) {
-            try {
-                const userRes = await graphClient.api(`/users/${userEmail}`).select('id').get();
-                userId = userRes.id;
-            } catch (e) {
-                context.log.error(`Could not find user ID for email ${userEmail}`);
-            }
-        }
-
+        // 3. Fetch User's Group Memberships (Transitive)
         const userGroupIds = new Set();
         if (userId) {
             try {
-                // transitiveMemberOf gets nested groups too
                 const groupsRes = await graphClient.api(`/users/${userId}/transitiveMemberOf`)
                     .select('id')
                     .top(999)
                     .get();
-                
                 (groupsRes.value || []).forEach(g => userGroupIds.add(g.id));
-                context.log(`[Option B] User belongs to ${userGroupIds.size} groups.`);
+                context.log(`[Option B] User is in ${userGroupIds.size} security groups.`);
             } catch (e) {
-                context.log.error("Failed to fetch user groups", e.message);
+                context.log.error(`[Option B] Group Fetch Error: ${e.message}`);
+                context.log.warn(`[Option B] NOTE: Ensure 'GroupMember.Read.All' (Application) is granted to the App Registration.`);
             }
         }
 
-        // 5. DEMO RULE: 
-        // If user is in the READER_GROUP or ADMIN_GROUP, they get access to ALL containers.
-        // This solves the issue where permissions weren't explicitly stamped on the container.
+        // 4. Determine Global Roles
         const isGlobalReader = userGroupIds.has(ROLES.READER_GROUP_ID);
         const isGlobalAdmin = userGroupIds.has(ROLES.ADMIN_GROUP_ID);
         
+        if (isGlobalAdmin) context.log(`[Option B] Role: DMS_Admin`);
+        else if (isGlobalReader) context.log(`[Option B] Role: DMS_Reader`);
+        else context.log(`[Option B] Role: Standard User (Checking specific permissions)`);
+
+        // 5. Fetch All Containers the APP can see
+        // NOTE: With 'FileStorageContainer.Selected', this ONLY returns containers where the App is a Manager/Owner.
         const response = await graphClient
             .api(`/storage/fileStorage/containers`)
             .version('beta')
@@ -86,53 +74,59 @@ module.exports = async function (context, req) {
             .expand('permissions') 
             .get();
 
-        const allContainers = response.value || [];
-
-        // If Global Reader/Admin, return everything immediately
-        if (isGlobalReader || isGlobalAdmin) {
-            context.log(`[Option B] User is Global Reader/Admin. Returning all ${allContainers.length} containers.`);
-            // Strip permissions before returning to client for cleanliness
-            allContainers.forEach(c => delete c.permissions);
-            
-            context.res = {
-                status: 200,
-                body: { containers: allContainers }
-            };
-            return;
-        }
-
-        // 6. Standard Filtering (Fall back to checking specific container permissions)
-        const accessibleContainers = [];
+        const containersAppCanSee = response.value || [];
+        context.log(`[Option B] The Backend App has visibility of ${containersAppCanSee.length} containers.`);
         
-        for (const container of allContainers) {
-            const perms = container.permissions || [];
-            
-            const hasAccess = perms.some(p => {
-                // Check User
-                const user = p.grantedToV2?.user;
-                if (user) {
-                    const upn = user.userPrincipalName || "";
-                    const email = user.email || "";
-                    if (upn.toLowerCase() === userEmail.toLowerCase() || 
-                        email.toLowerCase() === userEmail.toLowerCase()) {
-                        return true;
-                    }
-                }
-                // Check Group
-                const group = p.grantedToV2?.group;
-                if (group && group.id && userGroupIds.has(group.id)) {
-                    return true;
-                }
-                return false;
-            });
-
-            if (hasAccess) {
-                delete container.permissions; 
-                accessibleContainers.push(container);
-            }
+        if (containersAppCanSee.length === 0) {
+            context.log.warn(`[Option B] WARNING: App sees 0 containers. Ensure the App is added as a 'Manager' to containers via the Frontend 'Sync Groups' button.`);
         }
 
-        context.log(`[Option B] Filtered ${allContainers.length} containers down to ${accessibleContainers.length} for ${userEmail}.`);
+        // 6. Filtering Logic
+        let accessibleContainers = [];
+
+        if (isGlobalReader || isGlobalAdmin) {
+            // If user is a global reader, they can see everything the App can see
+            context.log(`[Option B] User has Global Access. Returning all visible containers.`);
+            accessibleContainers = containersAppCanSee;
+        } else {
+            // Granular Permission Check
+            accessibleContainers = containersAppCanSee.filter(container => {
+                const perms = container.permissions || [];
+                
+                // Diagnostic: If permissions are missing, the App likely isn't a Manager
+                if (perms.length === 0) {
+                     context.log.warn(`[Option B] Container '${container.displayName}' permissions are hidden. App needs 'Manager' role.`);
+                }
+
+                const hasAccess = perms.some(p => {
+                    const grantedUser = p.grantedToV2?.user;
+                    const grantedGroup = p.grantedToV2?.group;
+
+                    // 1. Direct User Assignment
+                    if (grantedUser && grantedUser.id === userId) return true;
+                    if (grantedUser) {
+                        const pEmail = (grantedUser.email || grantedUser.userPrincipalName || "").toLowerCase().trim();
+                        if (pEmail && pEmail === userEmail.trim()) return true;
+                    }
+
+                    // 2. Group Assignment
+                    if (grantedGroup && grantedGroup.id && userGroupIds.has(grantedGroup.id)) return true;
+
+                    return false;
+                });
+
+                if (hasAccess) {
+                    context.log(`[Option B] MATCH: User has specific access to '${container.displayName}'`);
+                }
+                return hasAccess;
+            });
+        }
+
+        // Clean output (remove permission details for security)
+        accessibleContainers.forEach(c => delete c.permissions);
+
+        context.log(`[Option B] Returning ${accessibleContainers.length} containers to client.`);
+        context.log(`[Option B] ----------------------------------------------------------------`);
 
         context.res = {
             status: 200,
@@ -140,12 +134,12 @@ module.exports = async function (context, req) {
         };
 
     } catch (error) {
-        context.log.error(error);
+        context.log.error(`[Option B] CRITICAL ERROR: ${error.message}`);
         context.res = {
             status: 500,
             body: { 
                 error: error.message,
-                details: "Check function logs." 
+                details: "Check function logs for details." 
             }
         };
     }

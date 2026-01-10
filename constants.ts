@@ -21,7 +21,8 @@ export const SCOPES = [
   "Files.ReadWrite.All",
   "FileStorageContainer.Selected",
   "GroupMember.Read.All",
-  "User.ReadBasic.All"
+  "User.ReadBasic.All",
+  "Application.Read.All"
 ];
 
 // --- OPTION B CONFIGURATION ---

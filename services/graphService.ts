@@ -1,6 +1,6 @@
 import { IPublicClientApplication, AccountInfo } from "@azure/msal-browser";
 import { SPEContainer, DriveItem, SearchResult, SPEPermission } from "../types";
-import { SHAREPOINT_CONFIG, SCOPES, ROLES, API_SERVER_URL } from "../constants";
+import { SHAREPOINT_CONFIG, SCOPES, ROLES, API_SERVER_URL, AZURE_CONFIG } from "../constants";
 import { loginRequest } from "../authConfig";
 
 const GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0";
@@ -118,6 +118,49 @@ export class GraphService {
         console.error(`Failed to fetch members for group ${groupId}`, e);
         return [];
     }
+  }
+
+  // --- Backend App Access Helpers ---
+
+  async getServicePrincipalId(): Promise<string> {
+    // We need to find the Service Principal (Enterprise App) Object ID corresponding to our Client ID
+    // This requires Application.Read.All
+    const clientId = AZURE_CONFIG.clientId;
+    // UPDATED: Using $filter is more robust than key-based lookup
+    const endpoint = `${GRAPH_BASE_URL}/servicePrincipals?$filter=appId eq '${clientId}'&$select=id`;
+    try {
+        const result = await this.callApi(endpoint);
+        if (result.value && result.value.length > 0) {
+            return result.value[0].id;
+        }
+        throw new Error("Service Principal not found. Ensure the App is registered in Enterprise Applications.");
+    } catch (e: any) {
+        throw new Error(`Could not find Service Principal for App ID ${clientId}. Ensure 'Application.Read.All' is granted. ${e.message}`);
+    }
+  }
+
+  async grantAppAccess(containerId: string): Promise<void> {
+      try {
+          const spId = await this.getServicePrincipalId();
+          const endpoint = `${GRAPH_BETA_URL}/storage/fileStorage/containers/${containerId}/permissions`;
+          const body = {
+              roles: ["manager"],
+              grantedToV2: {
+                  application: {
+                      id: spId
+                  }
+              }
+          };
+          await this.callApi(endpoint, { method: "POST", body: JSON.stringify(body) });
+          console.log("App Access Granted successfully.");
+      } catch (e: any) {
+          if (e.message.includes("Conflict")) {
+              console.log("App already has access.");
+          } else {
+              console.error("Failed to grant App access", e);
+              throw e;
+          }
+      }
   }
 
   // --- Container Operations ---
@@ -276,6 +319,14 @@ export class GraphService {
     const log = (msg: string) => { if(onLog) onLog(msg); else console.log(msg); };
 
     try {
+        log("Ensuring Backend App Access...");
+        try {
+            await this.grantAppAccess(containerId);
+            log("Backend App granted Manager access.");
+        } catch (appErr: any) {
+            log(`Warning: Could not grant App access. Backend filtering might fail. ${appErr.message}`);
+        }
+
         log("Fetching Security Groups...");
         const adminUsers = await this.getGroupMembers(ROLES.ADMIN_GROUP_ID);
         const readerUsers = await this.getGroupMembers(ROLES.READER_GROUP_ID);
