@@ -53,7 +53,6 @@ module.exports = async function (context, req) {
                 context.log(`[Option B] User is in ${userGroupIds.size} security groups.`);
             } catch (e) {
                 context.log.error(`[Option B] Group Fetch Error: ${e.message}`);
-                context.log.warn(`[Option B] NOTE: Ensure 'GroupMember.Read.All' (Application) is granted to the App Registration.`);
             }
         }
 
@@ -71,17 +70,17 @@ module.exports = async function (context, req) {
             .api(`/storage/fileStorage/containers`)
             .version('beta')
             .filter(`containerTypeId eq ${containerTypeId}`)
-            .expand('permissions') 
+            // Removed .expand('permissions') as per instruction
             .get();
 
         const containersAppCanSee = response.value || [];
         context.log(`[Option B] The Backend App has visibility of ${containersAppCanSee.length} containers.`);
         
         if (containersAppCanSee.length === 0) {
-            context.log.warn(`[Option B] WARNING: App sees 0 containers. Ensure the App is added as a 'Manager' to containers via the Frontend 'Sync Groups' button.`);
+            context.log.warn(`[Option B] WARNING: App sees 0 containers. Ensure the App is added as a 'Manager' via servicePrincipal.id`);
         }
 
-        // 6. Filtering Logic
+        // 6. Fetch Permissions for each container individually and Filter
         let accessibleContainers = [];
 
         if (isGlobalReader || isGlobalAdmin) {
@@ -90,23 +89,30 @@ module.exports = async function (context, req) {
             accessibleContainers = containersAppCanSee;
         } else {
             // Granular Permission Check
-            accessibleContainers = containersAppCanSee.filter(container => {
-                const perms = container.permissions || [];
-                
-                // Diagnostic: If permissions are missing, the App likely isn't a Manager
-                if (perms.length === 0) {
-                     context.log.warn(`[Option B] Container '${container.displayName}' permissions are hidden. App needs 'Manager' role.`);
+            for (const container of containersAppCanSee) {
+                let permissions = [];
+                try {
+                     const permsRes = await graphClient
+                        .api(`/storage/fileStorage/containers/${container.id}/permissions`)
+                        .version('beta')
+                        .get();
+                     permissions = permsRes.value || [];
+                } catch (permError) {
+                     context.log.warn(`[Option B] Failed to get perms for ${container.id}: ${permError.message}`);
                 }
 
-                const hasAccess = perms.some(p => {
+                // Check access
+                const hasAccess = permissions.some(p => {
                     const grantedUser = p.grantedToV2?.user;
                     const grantedGroup = p.grantedToV2?.group;
 
                     // 1. Direct User Assignment
-                    if (grantedUser && grantedUser.id === userId) return true;
                     if (grantedUser) {
-                        const pEmail = (grantedUser.email || grantedUser.userPrincipalName || "").toLowerCase().trim();
-                        if (pEmail && pEmail === userEmail.trim()) return true;
+                        if (grantedUser.id === userId) return true;
+                        
+                        // Fallback UPN Match (User ID is sometimes missing in permission response)
+                        const pUpn = (grantedUser.userPrincipalName || grantedUser.email || "").toLowerCase();
+                        if (pUpn && pUpn === userEmail) return true;
                     }
 
                     // 2. Group Assignment
@@ -116,14 +122,11 @@ module.exports = async function (context, req) {
                 });
 
                 if (hasAccess) {
+                    accessibleContainers.push(container);
                     context.log(`[Option B] MATCH: User has specific access to '${container.displayName}'`);
                 }
-                return hasAccess;
-            });
+            }
         }
-
-        // Clean output (remove permission details for security)
-        accessibleContainers.forEach(c => delete c.permissions);
 
         context.log(`[Option B] Returning ${accessibleContainers.length} containers to client.`);
         context.log(`[Option B] ----------------------------------------------------------------`);

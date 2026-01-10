@@ -123,7 +123,7 @@ export class GraphService {
   // --- Backend App Access Helpers ---
 
   async getServicePrincipal(): Promise<{id: string, displayName: string}> {
-    // We need to find the Service Principal (Enterprise App) Object ID AND DisplayName
+    // We need to find the Service Principal (Enterprise App) Object ID
     const clientId = AZURE_CONFIG.clientId;
     const endpoint = `${GRAPH_BASE_URL}/servicePrincipals?$filter=appId eq '${clientId}'&$select=id,displayName`;
     try {
@@ -145,14 +145,13 @@ export class GraphService {
           const sp = await this.getServicePrincipal();
           const endpoint = `${GRAPH_BETA_URL}/storage/fileStorage/containers/${containerId}/permissions`;
           
-          // CRITICAL FIX: Including 'displayName' helps Graph API identify this as an Application,
-          // preventing the "'userPrincipalName' is required" error.
+          // UPDATED: Using 'servicePrincipal' property as explicitly requested.
+          // This grants the App Registration's Service Principal access to the container.
           const body = {
               roles: ["manager"],
               grantedToV2: {
-                  application: {
-                      id: sp.id,
-                      displayName: sp.displayName
+                  servicePrincipal: {
+                      id: sp.id
                   }
               }
           };
